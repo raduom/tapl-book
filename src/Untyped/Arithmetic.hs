@@ -71,7 +71,7 @@ eval1 (Fix (TmIsZero t))                 = Fix (TmIsZero (eval1 t))
 eval1 t                                  = t -- Term can no longer be reduced.
 
 {-
-I will defined the function myself for now, until I get used to the
+I will define the function myself for now, until I get used to the
 idea, then I will use the function from recursion-schemes.
 
 1. Unpack the Fix so we get access to the children.
