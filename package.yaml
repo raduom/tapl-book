@@ -25,6 +25,7 @@ dependencies:
 - megaparsec
 - prettyprinter
 - text
+- insert-ordered-containers
 
 library:
   source-dirs: src

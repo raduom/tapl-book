@@ -1,4 +1,6 @@
 {-# LANGUAGE DeriveFunctor         #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE InstanceSigs          #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 module Untyped.Arithmetic where
@@ -17,7 +19,7 @@ import qualified Text.Megaparsec.Char.Lexer            as L
 import           Text.Megaparsec.Expr
 
 -- Printing
-import           Data.Text.Prettyprint.Doc             (Doc, defaultLayoutOptions, layoutSmart, (<+>))
+import           Data.Text.Prettyprint.Doc             (Doc, Pretty (..), defaultLayoutOptions, layoutSmart, (<+>))
 import           Data.Text.Prettyprint.Doc.Render.Text (renderStrict)
 
 data Term a = TmTrue
@@ -30,17 +32,19 @@ data Term a = TmTrue
             deriving (Eq, Show, Functor)
 
 instance Show1 Term where
-  liftShowsPrec shwP _ d (TmIf t1 t2 t3) =   showString "if " . shwP (d + 1) t1
-                                             . showString " then " . shwP (d + 1) t2
-                                             . showString " else " . shwP (d + 1) t3
-  liftShowsPrec _ _ _ TmTrue          = showString "true"
-  liftShowsPrec _ _ _ TmFalse         = showString "false"
-  liftShowsPrec _ _ _ TmZero          = showString "0"
-  liftShowsPrec shwP _ d (TmSucc t)   = showString "succ " . shwP (d + 1) t
-  liftShowsPrec shwP _ d (TmPred t)   = showString "pred " . shwP (d + 1) t
-  liftShowsPrec shwP _ d (TmIsZero t) = showString "iszero" . shwP (d + 1) t
-
-
+  liftShowsPrec shwP _ d (TmIf t1 t2 t3) =
+      showString "if " . shwP (d + 1) t1
+    . showString " then " . shwP (d + 1) t2
+    . showString " else " . shwP (d + 1) t3
+  liftShowsPrec _ _ _ TmTrue             = showString "true"
+  liftShowsPrec _ _ _ TmFalse            = showString "false"
+  liftShowsPrec _ _ _ TmZero             = showString "0"
+  liftShowsPrec shwP _ d (TmSucc t)      =
+    showString "succ " . shwP (d + 1) t
+  liftShowsPrec shwP _ d (TmPred t)      =
+    showString "pred " . shwP (d + 1) t
+  liftShowsPrec shwP _ d (TmIsZero t)    =
+    showString "iszero" . shwP (d + 1) t
 
 isNumeric :: Fix Term -> Bool
 isNumeric (Fix TmZero)     = True
@@ -186,16 +190,17 @@ zeroExpr = do
 
 {- Pretty print -}
 
-pretty :: Fix Term -> Doc ()
-pretty (Fix (TmIf t1 t2 t3)) = "if" <+> pretty t1 <+>
-                               "then" <+> pretty t2 <+>
-                               "else" <+> pretty t3
-pretty (Fix (TmSucc t))   = "succ" <+> pretty t
-pretty (Fix (TmPred t))   = "pred" <+> pretty t
-pretty (Fix (TmIsZero t)) = "iszero" <+> pretty t
-pretty (Fix TmZero)       = "zero"
-pretty (Fix TmTrue)       = "true"
-pretty (Fix TmFalse)      = "false"
+instance Pretty (Fix Term) where
+  pretty :: Fix Term -> Doc ann
+  pretty (Fix (TmIf t1 t2 t3)) = "if" <+> pretty t1 <+>
+                                 "then" <+> pretty t2 <+>
+                                 "else" <+> pretty t3
+  pretty (Fix (TmSucc t))   = "succ" <+> pretty t
+  pretty (Fix (TmPred t))   = "pred" <+> pretty t
+  pretty (Fix (TmIsZero t)) = "iszero" <+> pretty t
+  pretty (Fix TmZero)       = "zero"
+  pretty (Fix TmTrue)       = "true"
+  pretty (Fix TmFalse)      = "false"
 
 render :: Fix Term -> Text
 render = renderStrict . layoutSmart defaultLayoutOptions . pretty
