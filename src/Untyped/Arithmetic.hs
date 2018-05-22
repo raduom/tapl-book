@@ -6,7 +6,7 @@
 module Untyped.Arithmetic where
 
 import           Data.Functor.Classes                  (Show1 (..))
-import           Data.Functor.Foldable                 (Fix (..), unfix)
+import           Data.Functor.Foldable                 (Fix(..), unfix, cata)
 import           Data.Text                             (Text)
 import           Text.Show                             (showString)
 
@@ -192,15 +192,17 @@ zeroExpr = do
 
 instance Pretty (Fix Term) where
   pretty :: Fix Term -> Doc ann
-  pretty (Fix (TmIf t1 t2 t3)) = "if" <+> pretty t1 <+>
-                                 "then" <+> pretty t2 <+>
-                                 "else" <+> pretty t3
-  pretty (Fix (TmSucc t))   = "succ" <+> pretty t
-  pretty (Fix (TmPred t))   = "pred" <+> pretty t
-  pretty (Fix (TmIsZero t)) = "iszero" <+> pretty t
-  pretty (Fix TmZero)       = "zero"
-  pretty (Fix TmTrue)       = "true"
-  pretty (Fix TmFalse)      = "false"
+  pretty = cata alg
+    where
+      alg :: Term (Doc ann) -> Doc ann
+      alg (TmIf t1 t2 t3) =
+        "if" <+> t1 <+> "then" <+> t2 <+> "else" <+> t3
+      alg (TmSucc t) = "succ" <+> t
+      alg (TmPred t) = "pred" <+> t
+      alg (TmIsZero t) = "iszero" <+> t
+      alg TmZero = "zero"
+      alg TmTrue = "true"
+      alg TmFalse = "false"
 
 render :: Fix Term -> Text
 render = renderStrict . layoutSmart defaultLayoutOptions . pretty

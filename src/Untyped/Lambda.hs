@@ -4,8 +4,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Untyped.Lambda where
 
-import           Data.Functor.Classes                  (Show1 (..))
-import           Data.Functor.Foldable                 (Fix (..))
+import           Data.Functor.Classes                  (Show1(..))
+import           Data.Functor.Foldable                 (Fix(..), para)
 import qualified Data.HashMap.Strict.InsOrd            as M
 import           Data.Maybe                            (fromJust)
 import qualified Data.Text                             as T
@@ -13,7 +13,7 @@ import           Text.Show                             (showString)
 
 -- Printing
 import           Data.Text.Prettyprint.Doc             (Doc, Pretty (..), defaultLayoutOptions, layoutSmart, (<+>),
-                                                        (<>))
+                                                        (<>),parens)
 import           Data.Text.Prettyprint.Doc.Render.Text (renderStrict)
 
 {- AST -}
@@ -38,6 +38,8 @@ pickFreshName ctx name =
   if M.member name ctx then pickFreshName ctx (name `T.append` "'")
                        else (M.insert name NameBind ctx, name)
 
+-- This is already defined as a catamorphism, but there are
+-- no parenethesis optimisations. Will use this for testing
 instance Show1 Term where
   liftShowsPrec _ _ d (TmVar index)     = showString (show index)
   liftShowsPrec showT _ d (TmAbs l t)   =
@@ -47,21 +49,36 @@ instance Show1 Term where
     showString "(" . showT (d + 1) t1 . showString " "
                    . showT (d + 1) t2 . showString ")"
 
+-- Lets apply the optimizations proposed in the book for
+-- omitting parentheses in applications and abstractions
+-- by using a paramorphism to check the structure of the term
 instance Pretty (Fix Term) where
   pretty :: Fix Term -> Doc ann
-  pretty = go M.empty
+  pretty term = para ralg term'
     where
-      go :: Context -> Fix Term -> Doc ann
-      go ctx (Fix (TmVar index))  = pretty (indexToName ctx index)
-      go ctx (Fix (TmAbs name t)) =
-        let (ctx', freshName) = pickFreshName ctx name
-        in "(λ" <> pretty freshName <> ". " <+> go ctx' t <> ")"
-      go ctx (Fix (TmApp t1 t2)) = "(" <> pretty t1 <+> pretty t2 <> ")"
+      renameVars :: Context -> Fix Term -> (Context, Fix Term)
+      renameVars ctx (Fix (TmAbs name t)) =
+        let (ctx' , freshName) = pickFreshName ctx name
+            (ctx'', t') = renameVars ctx' t
+        in  (ctx'', Fix (TmAbs freshName t'))
+      renameVars ctx t = (ctx, t)
+      (context, term') = renameVars M.empty term
+
+      -- Do not show parenthesis around variables
+      vparens :: (Fix Term, Doc ann) -> Doc ann
+      vparens (Fix (TmVar _), tm) = tm
+      vparens (_, tm) = parens tm
+
+      ralg :: Term (Fix Term, Doc ann) -> Doc ann
+      ralg (TmApp (Fix (TmApp _ _), t1) (_ , t2)) = t1 <+> t2
+      ralg (TmApp t1 t2) = vparens t1 <+> vparens t2
+      ralg (TmAbs name (Fix (TmAbs _ _), t)) = "λ" <> pretty name <> "." <+> t
+      ralg (TmAbs name t) = "λ" <> pretty name <> "." <+> vparens t
+      ralg (TmVar index) = pretty (indexToName context index)
 
 render :: Fix Term -> T.Text
 render = renderStrict . layoutSmart defaultLayoutOptions . pretty
 
--- TODO: Express these transformations better
 termShift :: Int       -- ^ Depth of the term (d)
           -> Fix Term  -- ^ The term we are shifting
           -> Fix Term  -- ^ The result of the shift
@@ -96,4 +113,7 @@ termSubstTop s t = termShift (-1) (termSubst 0 (termShift 1 s) t)
 isValue :: Fix Term -> Bool
 isValue (Fix (TmAbs _ _)) = True
 isValue _ = False
+
+{- Parser -}
+
 
