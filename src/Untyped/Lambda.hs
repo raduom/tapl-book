@@ -4,17 +4,32 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Untyped.Lambda where
 
-import           Data.Functor.Classes                  (Show1(..))
-import           Data.Functor.Foldable                 (Fix(..), para)
+import           Data.Functor.Classes                  (Show1 (..))
+import           Data.Functor.Foldable                 (Fix (..), para)
 import qualified Data.HashMap.Strict.InsOrd            as M
+import           Data.List                             (elemIndex)
 import           Data.Maybe                            (fromJust)
 import qualified Data.Text                             as T
 import           Text.Show                             (showString)
 
 -- Printing
 import           Data.Text.Prettyprint.Doc             (Doc, Pretty (..), defaultLayoutOptions, layoutSmart, (<+>),
-                                                        (<>),parens)
+                                                        (<>))
+import qualified Data.Text.Prettyprint.Doc             as D (parens)
 import           Data.Text.Prettyprint.Doc.Render.Text (renderStrict)
+
+-- Parsing
+import           Control.Monad                         (void)
+import qualified Control.Monad.Trans.Class             as MT (MonadTrans (..))
+import qualified Control.Monad.Trans.State             as MT (State (..), evalState, get, modify)
+import           Data.Either                           (fromRight)
+import           Data.Void
+import           Text.Megaparsec
+import           Text.Megaparsec.Char
+import qualified Text.Megaparsec.Char.Lexer            as L
+import           Text.Megaparsec.Expr
+
+import Debug.Trace
 
 {- AST -}
 data Term a = TmVar Int
@@ -26,12 +41,13 @@ data Term a = TmVar Int
 type Context = M.InsOrdHashMap T.Text Binding
 
 data Binding = NameBind
+               deriving (Show, Eq)
 
 ctxLength :: Context -> Int
 ctxLength = M.size
 
 indexToName :: Context -> Int -> T.Text
-indexToName ctx index = M.keys ctx !! index
+indexToName ctx index = reverse (M.keys ctx) !! index
 
 pickFreshName :: Context -> T.Text -> (Context, T.Text)
 pickFreshName ctx name =
@@ -43,11 +59,14 @@ pickFreshName ctx name =
 instance Show1 Term where
   liftShowsPrec _ _ d (TmVar index)     = showString (show index)
   liftShowsPrec showT _ d (TmAbs l t)   =
-    showString "(λ" . shows l . showString ". "
+    showString "(λ" . showText l . showString ". "
                     . showT (d + 1) t . showString ")"
   liftShowsPrec showT _ d (TmApp t1 t2) =
     showString "(" . showT (d + 1) t1 . showString " "
                    . showT (d + 1) t2 . showString ")"
+
+showText :: T.Text -> ShowS
+showText = showString . T.unpack
 
 -- Lets apply the optimizations proposed in the book for
 -- omitting parentheses in applications and abstractions
@@ -61,20 +80,24 @@ instance Pretty (Fix Term) where
         let (ctx' , freshName) = pickFreshName ctx name
             (ctx'', t') = renameVars ctx' t
         in  (ctx'', Fix (TmAbs freshName t'))
+      renameVars ctx (Fix (TmApp t1 t2)) =
+        let (ctx' , t1') = renameVars ctx t1
+            (ctx'', t2') = renameVars ctx' t2
+        in  (ctx'', Fix (TmApp t1' t2'))
       renameVars ctx t = (ctx, t)
       (context, term') = renameVars M.empty term
 
       -- Do not show parenthesis around variables
       vparens :: (Fix Term, Doc ann) -> Doc ann
       vparens (Fix (TmVar _), tm) = tm
-      vparens (_, tm) = parens tm
+      vparens (_, tm)             = D.parens tm
 
       ralg :: Term (Fix Term, Doc ann) -> Doc ann
       ralg (TmApp (Fix (TmApp _ _), t1) (_ , t2)) = t1 <+> t2
-      ralg (TmApp t1 t2) = vparens t1 <+> vparens t2
-      ralg (TmAbs name (Fix (TmAbs _ _), t)) = "λ" <> pretty name <> "." <+> t
-      ralg (TmAbs name t) = "λ" <> pretty name <> "." <+> vparens t
-      ralg (TmVar index) = pretty (indexToName context index)
+      ralg (TmApp t1 t2)                          = vparens t1 <+> vparens t2
+      ralg (TmAbs name (Fix (TmAbs _ _), t))      = "λ" <> pretty name <> "." <+> t
+      ralg (TmAbs name t)                         = "λ" <> pretty name <> "." <+> vparens t
+      ralg (TmVar index)                          = pretty (indexToName context index)
 
 render :: Fix Term -> T.Text
 render = renderStrict . layoutSmart defaultLayoutOptions . pretty
@@ -112,8 +135,60 @@ termSubstTop s t = termShift (-1) (termSubst 0 (termShift 1 s) t)
 
 isValue :: Fix Term -> Bool
 isValue (Fix (TmAbs _ _)) = True
-isValue _ = False
+isValue _                 = False
+
+{- Lexer -}
+type Parser = ParsecT Void T.Text (MT.State VarContext)
+
+type VarContext = [T.Text]
+
+sc :: Parser ()
+sc = L.space space1 empty empty
+
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme sc
+
+parens :: Parser a -> Parser a
+parens = between (char '(') (char ')')
+
+-- ^ Identifier is a letter followed by a number of primes
+identifier :: Parser T.Text
+identifier =
+  T.pack <$> ((:) <$> letterChar <*> many (char '\''))
 
 {- Parser -}
 
+term :: Parser (Fix Term)
+term = parens expr
+   <|> absExpr
+   <|> varExpr
 
+varExpr :: Parser (Fix Term)
+varExpr = do
+  name <- identifier
+  vars <- MT.lift MT.get
+  return (Fix (TmVar (fromJust (name `elemIndex` vars))))
+
+absExpr :: Parser (Fix Term)
+absExpr = do
+  lam  <- lexeme (char 'λ' <|> char '\\')
+  name <- lexeme identifier
+  MT.lift $ MT.modify (name :)
+  lexeme (char '.')
+  term <- expr
+  MT.lift $ MT.modify tail
+  pure (Fix (TmAbs name term))
+
+expr :: Parser (Fix Term)
+expr = makeExprParser term appOpTable
+  where
+    appOpTable = [[InfixL ((.) Fix . TmApp <$ space1)]]
+
+{- Helper functions -}
+
+parseExpr :: T.Text -> Fix Term
+parseExpr t = case parseResult of
+  Left _ -> error "Failed parsing"
+  Right t -> t
+  where
+    parseResult = MT.evalState (runParserT expr "" t) []

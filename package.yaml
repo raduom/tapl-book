@@ -26,6 +26,9 @@ dependencies:
 - prettyprinter
 - text
 - insert-ordered-containers
+- transformers
+
+- validation
 
 library:
   source-dirs: src
