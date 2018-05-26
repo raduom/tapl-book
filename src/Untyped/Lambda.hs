@@ -29,8 +29,6 @@ import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer            as L
 import           Text.Megaparsec.Expr
 
-import Debug.Trace
-
 {- AST -}
 data Term a = TmVar Int
             | TmAbs T.Text a
