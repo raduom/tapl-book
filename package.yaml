@@ -27,6 +27,8 @@ dependencies:
 - text
 - insert-ordered-containers
 - transformers
+- safe
+- free
 
 - validation
 
