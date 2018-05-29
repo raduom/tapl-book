@@ -1,17 +1,20 @@
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs      #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Typed.Boolean where
 
+import           Control.Comonad                       (Comonad (..))
+import           Control.Comonad.Cofree                (Cofree (..))
 import           Data.Functor.Classes                  (Show1 (..))
 import           Data.Functor.Foldable                 (Fix (..), para)
 import qualified Data.HashMap.Strict.InsOrd            as M
 import           Data.List                             (elemIndex)
 import           Data.Maybe                            (fromJust)
 import qualified Data.Text                             as T
+import           Safe
 import           Text.Show                             (showString)
-import Safe
 
 -- Printing
 import           Data.Text.Prettyprint.Doc             (Doc, Pretty (..), defaultLayoutOptions, layoutSmart, (<+>),
@@ -22,13 +25,15 @@ import           Data.Text.Prettyprint.Doc.Render.Text (renderStrict)
 -- Parsing
 import           Control.Monad                         (void)
 import qualified Control.Monad.Trans.Class             as MT (MonadTrans (..))
-import qualified Control.Monad.Trans.State             as MT (State (..), evalState, get, modify)
+import qualified Control.Monad.Trans.State.Strict      as MT (State (..), evalState, get, modify)
 import           Data.Either                           (fromRight)
 import           Data.Void
 import           Text.Megaparsec
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer            as L
 import           Text.Megaparsec.Expr
+
+import           Debug.Trace
 
 {- AST -}
 
@@ -38,7 +43,7 @@ data Type = TyArrow Type Type
 
 instance Show Type where
   show (TyArrow tyT1 tyT2) = "(" ++ show tyT1 ++ " → " ++ show tyT2 ++ ")"
-  show TyBoolean = "Bool"
+  show TyBoolean           = "Bool"
 
 newtype Binding = VarBinding Type
                 deriving (Show, Eq)
@@ -49,9 +54,12 @@ data Term a = TmVar Int
             | TmTrue
             | TmFalse
             | TmIf a a a
-            deriving (Show, Eq, Functor)
+            deriving (Show, Eq, Functor, Foldable, Traversable)
 
 type Context = [(T.Text, Binding)]
+
+removeBinding :: Context -> T.Text -> Context
+removeBinding ctx l = filter ((l /=) . fst) ctx
 
 addBinding :: Context -> T.Text -> Type -> Context
 addBinding ctx name ty = (name, VarBinding ty) : ctx
@@ -59,7 +67,7 @@ addBinding ctx name ty = (name, VarBinding ty) : ctx
 getBinding :: Context -> Int -> Either T.Text (T.Text, Type)
 getBinding ctx index =
   case atMay ctx index of
-    Nothing              -> Left "Looked up index does not exist."
+    Nothing                   -> Left "Looked up index does not exist."
     Just (x, VarBinding tyT1) -> Right (x, tyT1)
 
 getType :: Context -> Int -> Either T.Text Type
@@ -249,8 +257,36 @@ expr = makeExprParser term appOpTable
 
 parseExpr :: T.Text -> Fix Term
 parseExpr t = case parseResult of
-  Left _ -> error "Failed parsing"
+  Left _  -> error "Failed parsing"
   Right t -> t
   where
     parseResult = MT.evalState (runParserT expr "" t) []
 
+{- Type annotated AST -}
+
+type TypeCheck = MT.State Context Type
+
+makeAnnotation :: Functor f => Fix f -> Cofree f ()
+makeAnnotation (Fix f) = () :< fmap makeAnnotation f
+
+annotate :: Cofree Term () -> Cofree Term Type
+annotate t = MT.evalState (sequence $ extend generateTypes t) []
+
+generateTypes :: Cofree Term () -> TypeCheck
+generateTypes (() :< TmTrue)  = return TyBoolean
+generateTypes (() :< TmFalse) = return TyBoolean
+generateTypes (() :< TmAbs name ty t) = do
+  MT.modify ((name, VarBinding ty) :)
+  tT <- generateTypes t
+  return (TyArrow ty tT)
+generateTypes (() :< TmApp t1 t2) = do
+  (TyArrow tyT11 tyT12) <- generateTypes t1
+  tyT2 <- generateTypes t2
+  return tyT12
+generateTypes (() :< TmVar index) = do
+  ctx <- MT.get
+  case getType ctx index  of
+    Left err -> error  $ show err 
+    Right ty -> return ty
+generateTypes (() :< TmIf t1 t2 t3) =
+  generateTypes t2
