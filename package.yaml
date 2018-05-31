@@ -26,10 +26,12 @@ dependencies:
 - prettyprinter
 - text
 - insert-ordered-containers
+- containers
 - transformers
 - safe
 - free
 - comonad
+- hashable
 
 - validation
 

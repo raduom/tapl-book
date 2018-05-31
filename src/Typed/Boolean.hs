@@ -1,4 +1,6 @@
+{-# LANGUAGE DeriveAnyClass    #-}
 {-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs      #-}
@@ -7,12 +9,15 @@ module Typed.Boolean where
 
 import           Control.Comonad                       (Comonad (..))
 import           Control.Comonad.Cofree                (Cofree (..))
-import           Data.Functor.Classes                  (Show1 (..))
+import           Data.Functor.Classes                  (Eq1 (..), Show1 (..))
 import           Data.Functor.Foldable                 (Fix (..), para)
-import qualified Data.HashMap.Strict.InsOrd            as M
+import           Data.Hashable                         (Hashable (..))
+import           Data.Hashable.Lifted                  (Hashable1 (..))
+import qualified Data.HashMap.Strict.InsOrd            as Map
 import           Data.List                             (elemIndex)
-import           Data.Maybe                            (fromJust)
+import           Data.Maybe                            (fromJust, maybe)
 import qualified Data.Text                             as T
+import           GHC.Generics
 import           Safe
 import           Text.Show                             (showString)
 
@@ -24,8 +29,10 @@ import           Data.Text.Prettyprint.Doc.Render.Text (renderStrict)
 
 -- Parsing
 import           Control.Monad                         (void)
-import qualified Control.Monad.Trans.Class             as MT (MonadTrans (..))
-import qualified Control.Monad.Trans.State.Strict      as MT (State (..), evalState, get, modify)
+import           Control.Monad.Trans.Class             (MonadTrans (..), lift)
+import           Control.Monad.Trans.Except            (ExceptT (..), runExceptT, throwE)
+import           Control.Monad.Trans.State.Strict      (evalState, get, gets, modify)
+import qualified Control.Monad.Trans.State.Strict      as S (State (..))
 import           Data.Either                           (fromRight)
 import           Data.Void
 import           Text.Megaparsec
@@ -39,7 +46,7 @@ import           Debug.Trace
 
 data Type = TyArrow Type Type
           | TyBoolean
-          deriving (Eq)
+          deriving (Eq, Generic, Hashable)
 
 instance Show Type where
   show (TyArrow tyT1 tyT2) = "(" ++ show tyT1 ++ " → " ++ show tyT2 ++ ")"
@@ -54,7 +61,7 @@ data Term a = TmVar Int
             | TmTrue
             | TmFalse
             | TmIf a a a
-            deriving (Show, Eq, Functor, Foldable, Traversable)
+            deriving (Show, Eq, Functor, Foldable, Traversable, Generic)
 
 type Context = [(T.Text, Binding)]
 
@@ -120,6 +127,35 @@ instance Show1 Term where
   liftShowsPrec showT _ d (TmApp t1 t2) =
     showString "(" . showT (d + 1) t1 . showString " "
                    . showT (d + 1) t2 . showString ")"
+
+instance Eq1 Term where
+  liftEq _ TmFalse TmFalse                     = True
+  liftEq _ TmTrue TmTrue                       = True
+  liftEq eq (TmIf t1 t2 t3) (TmIf t1' t2' t3') =
+    t1 `eq` t1' && t2 `eq` t2' && t3 `eq` t3'
+  liftEq eq (TmAbs v ty t) (TmAbs v' ty' t')   =
+    v == v' && ty == ty' && t `eq` t'
+  liftEq eq (TmApp t1 t2) (TmApp t1' t2')      =
+    t1 `eq` t1' && t2 `eq` t2'
+  liftEq _ (TmVar idx) (TmVar idx')            = idx == idx'
+  liftEq _ _ _ = False
+
+instance Hashable (Cofree Term ()) where
+  hashWithSalt s (() :< TmTrue)        = s `hashWithSalt` (0 :: Int)
+  hashWithSalt s (() :< TmFalse)       = s `hashWithSalt` (1 :: Int)
+  hashWithSalt s (() :< TmIf t1 t2 t3) = s `hashWithSalt`
+                                         (2 :: Int) `hashWithSalt`
+                                         t1 `hashWithSalt`
+                                         t2 `hashWithSalt` t3
+  hashWithSalt s (() :< TmAbs v ty t)  = s `hashWithSalt`
+                                         (3 :: Int) `hashWithSalt`
+                                         v `hashWithSalt`
+                                         ty `hashWithSalt` t
+  hashWithSalt s (() :< TmApp t1 t2)   = s `hashWithSalt`
+                                         (4 :: Int) `hashWithSalt`
+                                         t1 `hashWithSalt` t2
+  hashWithSalt s (() :< TmVar index)   = s `hashWithSalt`
+                                         (5 :: Int) `hashWithSalt` index
 
 showText :: T.Text -> ShowS
 showText = showString . T.unpack
@@ -192,7 +228,7 @@ termSubstTop s t = termShift (-1) (termSubst 0 (termShift 1 s) t)
 
 {- Lexer -}
 
-type Parser = ParsecT Void T.Text (MT.State VarContext)
+type Parser = ParsecT Void T.Text (S.State VarContext)
 
 type VarContext = [T.Text]
 
@@ -233,19 +269,19 @@ term = parens expr
 varExpr :: Parser (Fix Term)
 varExpr = do
   name <- identifier
-  vars <- MT.lift MT.get
+  vars <- lift get
   return (Fix (TmVar (fromJust (name `elemIndex` vars))))
 
 absExpr :: Parser (Fix Term)
 absExpr = do
   lam  <- lexeme (char 'λ' <|> char '\\')
   name <- lexeme identifier
-  MT.lift $ MT.modify (name :)
+  lift $ modify (name :)
   lexeme (char ':')
   tyT <- tyExpr
   lexeme (char '.')
   term <- expr
-  MT.lift $ MT.modify tail
+  lift $ modify tail
   pure (Fix (TmAbs name tyT term))
 
 expr :: Parser (Fix Term)
@@ -260,33 +296,76 @@ parseExpr t = case parseResult of
   Left _  -> error "Failed parsing"
   Right t -> t
   where
-    parseResult = MT.evalState (runParserT expr "" t) []
+    parseResult = evalState (runParserT expr "" t) []
 
 {- Type annotated AST -}
 
-type TypeCheck = MT.State Context Type
+data TypeCheckContext = TypeCheckContext
+     { context :: Context
+     , memos   :: Map.InsOrdHashMap (Cofree Term ()) Type
+     }
+
+type TypeCheck a = ExceptT T.Text (S.State TypeCheckContext) a
+
+updateContext :: (Context -> Context) -> TypeCheck ()
+updateContext f = lift $ modify (\(TypeCheckContext c m) -> TypeCheckContext (f c) m)
+
+emptyContext :: TypeCheckContext
+emptyContext = TypeCheckContext [] Map.empty
+
+memoized :: (Cofree Term () -> TypeCheck Type) -> Cofree Term () -> TypeCheck Type
+memoized f t = Map.lookup t <$> mTable >>= maybe mAdd return
+  where
+    mTable :: TypeCheck (Map.InsOrdHashMap (Cofree Term ()) Type)
+    mTable =  lift $ gets memos
+    mAdd :: TypeCheck Type
+    mAdd = do
+      ty <- f t
+      lift $ modify (\(TypeCheckContext c m) ->
+                       TypeCheckContext c (Map.insert t ty m))
+      return ty
 
 makeAnnotation :: Functor f => Fix f -> Cofree f ()
 makeAnnotation (Fix f) = () :< fmap makeAnnotation f
 
-annotate :: Cofree Term () -> Cofree Term Type
-annotate t = MT.evalState (sequence $ extend generateTypes t) []
-
-generateTypes :: Cofree Term () -> TypeCheck
+generateTypes :: Cofree Term () -> TypeCheck Type
 generateTypes (() :< TmTrue)  = return TyBoolean
 generateTypes (() :< TmFalse) = return TyBoolean
 generateTypes (() :< TmAbs name ty t) = do
-  MT.modify ((name, VarBinding ty) :)
-  tT <- generateTypes t
+  updateContext ((name, VarBinding ty) :)
+  tT <- memoized generateTypes t
+  updateContext tail
   return (TyArrow ty tT)
 generateTypes (() :< TmApp t1 t2) = do
   (TyArrow tyT11 tyT12) <- generateTypes t1
-  tyT2 <- generateTypes t2
-  return tyT12
-generateTypes (() :< TmVar index) = do
-  ctx <- MT.get
+  tyT2 <- memoized generateTypes t2
+  if tyT2 /= tyT11 then throwE "Application to expression with wrong type."
+                   else return tyT12
+generateTypes t@(() :< TmVar index) = do
+  TypeCheckContext ctx _ <- lift get
   case getType ctx index  of
-    Left err -> error  $ show err 
+    Left err -> throwE err
     Right ty -> return ty
-generateTypes (() :< TmIf t1 t2 t3) =
-  generateTypes t2
+generateTypes (() :< TmIf t1 t2 t3) = do
+  t1T <- memoized generateTypes t1
+  t2T <- memoized generateTypes t2
+  t3T <- memoized generateTypes t3
+  if t1T /= TyBoolean
+  then throwE "If's condition should be Bool."
+  else
+    if t2T /= t3T
+    then throwE "If's branches must have the same type."
+    else return t2T
+
+annotate :: Cofree Term () -> Either T.Text (Cofree Term Type)
+annotate t = evalState (runExceptT (sequence $ extend (memoized generateTypes) t)) emptyContext
+
+{- Debugging -}
+
+-- dbgTable :: TypeCheck ()
+-- dbgTable = do
+--   tbl <- lift $ gets memos
+--   trace ("Table: " ++ show tbl ++ "\n") $ return ()
+
+-- dbgMsg :: Show a => a -> TypeCheck ()
+-- dbgMsg msg = trace ("debug: " ++ show msg) $ return ()
