@@ -52,8 +52,7 @@ instance Show Type where
   show (TyArrow tyT1 tyT2) = "(" ++ show tyT1 ++ " → " ++ show tyT2 ++ ")"
   show TyBoolean           = "Bool"
 
-newtype Binding = VarBinding Type
-                deriving (Show, Eq)
+type Binding = Type
 
 data Term a = TmVar Int
             | TmAbs T.Text Type a
@@ -69,13 +68,13 @@ removeBinding :: Context -> T.Text -> Context
 removeBinding ctx l = filter ((l /=) . fst) ctx
 
 addBinding :: Context -> T.Text -> Type -> Context
-addBinding ctx name ty = (name, VarBinding ty) : ctx
+addBinding ctx name ty = (name, ty) : ctx
 
 getBinding :: Context -> Int -> Either T.Text (T.Text, Type)
 getBinding ctx index =
   case atMay ctx index of
     Nothing                   -> Left "Looked up index does not exist."
-    Just (x, VarBinding tyT1) -> Right (x, tyT1)
+    Just (x, tyT1) -> Right (x, tyT1)
 
 getType :: Context -> Int -> Either T.Text Type
 getType = (.) (fmap snd) . getBinding
@@ -332,7 +331,7 @@ generateTypes :: Cofree Term () -> TypeCheck Type
 generateTypes (() :< TmTrue)  = return TyBoolean
 generateTypes (() :< TmFalse) = return TyBoolean
 generateTypes (() :< TmAbs name ty t) = do
-  updateContext ((name, VarBinding ty) :)
+  updateContext ((name, ty) :)
   tT <- memoized generateTypes t
   updateContext tail
   return (TyArrow ty tT)
