@@ -4,3 +4,5 @@ module Lib
 
 someFunc :: IO ()
 someFunc = putStrLn "someFunc"
+
+newtype Cont r a = Cont { runCont :: (a -> r) -> r }
