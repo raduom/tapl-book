@@ -100,7 +100,10 @@ unitExpr = lexeme (symbol "unit")
 expr :: Parser (Fix Term)
 expr = makeExprParser term appOpTable
     where
-      appOpTable = [[InfixL ((.) Fix . TmApp <$ space1)]]
+      appOpTable = [[ InfixL ((.) Fix . TmApp <$ space1)
+                    , InfixL (seqf <$ symbol ";") ]]
+      seqf :: Fix Term -> Fix Term -> Fix Term
+      seqf el er = Fix (TmApp (Fix (TmAbs "" TyUnit er)) el)
 
 {- Helpers -}
 
