@@ -14,6 +14,7 @@ import           Data.Void                        (Void)
 import           Text.Megaparsec                  (ParsecT, between, empty, many, runParserT, (<|>))
 import           Text.Megaparsec.Char             (char, letterChar, space1)
 import qualified Text.Megaparsec.Char.Lexer       as L (lexeme, space, symbol)
+import           Text.Megaparsec.Error            (parseErrorPretty)
 import           Text.Megaparsec.Expr             (Operator (..), makeExprParser)
 
 import           Typed.Simple.Syntax
@@ -54,6 +55,10 @@ tyExpr = makeExprParser tyTerm tyOpTable
 
 term :: Parser (Fix Term)
 term = parens expr
+   <|> trueExpr
+   <|> falseExpr
+   <|> ifExpr
+   <|> unitExpr
    <|> absExpr
    <|> varExpr
 
@@ -67,7 +72,7 @@ absExpr :: Parser (Fix Term)
 absExpr = do
   void $ lexeme (char 'λ' <|> char '\\')
   name <- lexeme identifier
-      <|> symbol "_" >> ""
+      <|> (symbol "_" >> pure "")
   lift $ modify (name :)
   void $ lexeme (char ':')
   tyT  <- tyExpr
@@ -102,14 +107,14 @@ expr :: Parser (Fix Term)
 expr = makeExprParser term appOpTable
     where
       appOpTable = [[ InfixL ((.) Fix . TmApp <$ space1)
-                    , InfixL (seqf <$ symbol ";") ]]
-      seqf :: Fix Term -> Fix Term -> Fix Term
-      seqf el er = Fix (TmApp (Fix (TmAbs "" TyUnit er)) el)
+                    , InfixL (seq <$ symbol ";") ]]
+      seq :: Fix Term -> Fix Term -> Fix Term
+      seq el er = Fix (TmApp (Fix (TmAbs "" TyUnit er)) el)
 
 {- Helpers -}
 
 parseExpr :: T.Text -> Fix Term
 parseExpr tm =
   case evalState (runParserT expr "" tm) [] of
-    Left _    -> error "Failed parsing"
+    Left msg  -> error $ "Failed parsing" ++ parseErrorPretty msg
     Right tm' -> tm'
