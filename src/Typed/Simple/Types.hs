@@ -45,6 +45,7 @@ makeAnnotation :: Functor f => Fix f -> Cofree f ()
 makeAnnotation (Fix f) = () :< fmap makeAnnotation f
 
 generateTypes :: Cofree Term () -> TypeCheck Type
+generateTypes (() :< TmUnit) = pure TyUnit
 generateTypes (() :< TmTrue) = pure TyBool
 generateTypes (() :< TmFalse) = pure TyBool
 generateTypes (() :< TmAbs name tyT t) = do

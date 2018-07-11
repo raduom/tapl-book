@@ -81,9 +81,8 @@ falseExpr = do
   pure (Fix TmTrue)
 
 trueExpr :: Parser (Fix Term)
-trueExpr = do
-  void $ lexeme (symbol "false")
-  pure (Fix TmFalse)
+trueExpr = lexeme (symbol "false")
+        >> pure (Fix TmFalse)
 
 ifExpr :: Parser (Fix Term)
 ifExpr = do
@@ -94,17 +93,14 @@ ifExpr = do
   void $ lexeme (symbol "else")
   Fix . TmIf cnd tb <$> expr
 
+unitExpr :: Parser (Fix Term)
+unitExpr = lexeme (symbol "unit")
+        >> pure (Fix TmUnit)
+
 expr :: Parser (Fix Term)
 expr = makeExprParser term appOpTable
     where
       appOpTable = [[InfixL ((.) Fix . TmApp <$ space1)]]
-
-
-
-
-
-
-
 
 {- Helpers -}
 

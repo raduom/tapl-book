@@ -27,10 +27,12 @@ data Term a = TmVar Int
             | TmTrue
             | TmFalse
             | TmIf a a a
+            | TmUnit
             deriving (Show, Eq, Functor, Foldable, Traversable, Generic)
 
 data Type = TyArrow Type Type
           | TyBool
+          | TyUnit
           deriving (Eq, Generic, Hashable)
 
 type Binding = Type
@@ -40,6 +42,7 @@ type Context = [(T.Text, Binding)]
 instance Show Type where
   show (TyArrow tyT1 tyT2) = "(" ++ show tyT1 ++ " → " ++ show tyT2 ++ ")"
   show TyBool              = "Bool"
+  show TyUnit              = "()"
 
 instance Show1 Term where
   liftShowsPrec _ _ _ (TmVar index)     = showString (show index)
@@ -56,6 +59,7 @@ instance Show1 Term where
     . showString " else " . showT (d + 1) b2
   liftShowsPrec _ _ _ TmTrue = showString "true"
   liftShowsPrec _ _ _ TmFalse = showString "false"
+  liftShowsPrec _ _ _ TmUnit = showString "()"
 
 instance Eq1 Term where
   liftEq _ TmFalse TmFalse                     = True
@@ -72,6 +76,7 @@ instance Eq1 Term where
 instance Hashable (Cofree Term ()) where
   hashWithSalt s (() :< TmTrue)        = s `hashWithSalt` (0 :: Int)
   hashWithSalt s (() :< TmFalse)       = s `hashWithSalt` (1 :: Int)
+  hashWithSalt s (() :< TmUnit)        = s `hashWithSalt` (3 :: Int)
   hashWithSalt s (() :< TmIf t1 t2 t3) = s `hashWithSalt`
                                          (2 :: Int) `hashWithSalt`
                                          t1 `hashWithSalt`
@@ -175,6 +180,7 @@ instance Pretty (Fix Term) where
       vp (_            , tm') = parens tm'
 
       ralg :: Term (Fix Term, Doc ann) -> Doc ann
+      ralg TmUnit = "unit"
       ralg TmTrue = "true"
       ralg TmFalse = "false"
       ralg (TmApp (Fix (TmApp _ _), t1) (_, t2)) = t1 <+> t2
