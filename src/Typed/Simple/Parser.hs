@@ -67,6 +67,7 @@ absExpr :: Parser (Fix Term)
 absExpr = do
   void $ lexeme (char 'λ' <|> char '\\')
   name <- lexeme identifier
+      <|> symbol "_" >> ""
   lift $ modify (name :)
   void $ lexeme (char ':')
   tyT  <- tyExpr
