@@ -3,18 +3,18 @@
 
 module Typed.Simple.Parser where
 
+import           Control.Monad                    (void)
 import           Control.Monad.Trans.Class        (lift)
-import           Control.Monad.Trans.State.Strict (State, get, modify, evalState)
+import           Control.Monad.Trans.State.Strict (State, evalState, get, modify)
 import           Data.Functor.Foldable            (Fix (..))
 import           Data.List                        (elemIndex)
 import           Data.Maybe                       (fromJust)
 import qualified Data.Text                        as T (Text, pack)
 import           Data.Void                        (Void)
-import           Text.Megaparsec                  (ParsecT, between, empty, many, (<|>), runParserT)
+import           Text.Megaparsec                  (ParsecT, between, empty, many, runParserT, (<|>))
 import           Text.Megaparsec.Char             (char, letterChar, space1)
 import qualified Text.Megaparsec.Char.Lexer       as L (lexeme, space, symbol)
 import           Text.Megaparsec.Expr             (Operator (..), makeExprParser)
-import Control.Monad (void)
 
 import           Typed.Simple.Syntax
 
@@ -43,6 +43,7 @@ identifier =
 tyTerm :: Parser Type
 tyTerm = parens tyExpr
      <|> (symbol "Bool" >> pure TyBool)
+     <|> (symbol "Unit" >> pure TyUnit)
 
 tyExpr :: Parser Type
 tyExpr = makeExprParser tyTerm tyOpTable
@@ -74,15 +75,41 @@ absExpr = do
   lift $ modify tail
   pure (Fix (TmAbs name tyT t))
 
+falseExpr :: Parser (Fix Term)
+falseExpr = do
+  void $ lexeme (symbol "true")
+  pure (Fix TmTrue)
+
+trueExpr :: Parser (Fix Term)
+trueExpr = do
+  void $ lexeme (symbol "false")
+  pure (Fix TmFalse)
+
+ifExpr :: Parser (Fix Term)
+ifExpr = do
+  void $ lexeme (symbol "if")
+  cnd <- expr
+  void $ lexeme (symbol "then")
+  tb  <- expr
+  void $ lexeme (symbol "else")
+  Fix . TmIf cnd tb <$> expr
+
 expr :: Parser (Fix Term)
 expr = makeExprParser term appOpTable
     where
       appOpTable = [[InfixL ((.) Fix . TmApp <$ space1)]]
+
+
+
+
+
+
+
 
 {- Helpers -}
 
 parseExpr :: T.Text -> Fix Term
 parseExpr tm =
   case evalState (runParserT expr "" tm) [] of
-    Left _ -> error "Failed parsing"
+    Left _    -> error "Failed parsing"
     Right tm' -> tm'
